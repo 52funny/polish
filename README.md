@@ -12,6 +12,24 @@ Features:
 - OpenAI-compatible Chat Completions endpoints and model discovery.
 - Cancelable background requests and a single application window.
 
+## Screenshots
+
+Captured from the native application using sample text and a local demo model service. The settings shown contain a dummy API key.
+
+<p align="center">
+  <a href="docs/screenshots/polishing.png" title="Polishing">
+    <img src="docs/screenshots/polishing.png" alt="English draft and polished result" width="30%" />
+  </a>
+  &nbsp;&nbsp;
+  <a href="docs/screenshots/model-settings.png" title="Model settings">
+    <img src="docs/screenshots/model-settings.png" alt="Demo endpoint and model dropdown" width="30%" />
+  </a>
+  &nbsp;&nbsp;
+  <a href="docs/screenshots/translation-zh-Hans.png" title="Chinese interface and translation">
+    <img src="docs/screenshots/translation-zh-Hans.png" alt="English source and Chinese translation" width="30%" />
+  </a>
+</p>
+
 ## Requirements
 
 - Go **1.27.3 or later**.
@@ -176,6 +194,7 @@ Mock tests do not establish a provider's compatibility or output quality. Use a 
 ```text
 polish/
 ├── cmd/polish/              # CLI entry point and opt-in e2e integration
+├── docs/screenshots/        # Native application screenshots used in this README
 ├── internal/
 │   ├── app/                 # Lifecycle, task state, and native views
 │   ├── config/              # Settings validation and persistence
