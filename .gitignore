@@ -1,0 +1,4 @@
+/bin/
+/polish
+*.test
+coverage.out
