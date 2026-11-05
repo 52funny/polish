@@ -4,11 +4,35 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 )
+
+func TestCopyDaemonExitStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name, script string
+		wantError    bool
+	}{
+		{"background-owner", "#!/bin/sh\ncat >/dev/null\nsleep 1 >&2 &\nexit 0\n", false},
+		{"helper-failure", "#!/bin/sh\ncat >/dev/null\nexit 7\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "wl-copy"), []byte(tc.script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			err := New().Copy(context.Background(), "multiline\ntext")
+			if (err != nil) != tc.wantError {
+				t.Fatalf("copy error = %v; want error: %t", err, tc.wantError)
+			}
+		})
+	}
+}
 
 func TestReadSelectionPreservesTextAndDoesNotFallback(t *testing.T) {
 	for _, primary := range []bool{true, false} {
@@ -27,6 +51,40 @@ func TestReadSelectionPreservesTextAndDoesNotFallback(t *testing.T) {
 		if err != nil || s != "  中文\nSecond line\n" || calls != 1 {
 			t.Fatalf("read: %q %v", s, err)
 		}
+	}
+}
+
+// Opt-in integration check uses PRIMARY so the normal clipboard is untouched.
+func TestLiveClipboardCopy(t *testing.T) {
+	if os.Getenv("POLISH_LIVE_CLIPBOARD") != "1" {
+		t.Skip("set POLISH_LIVE_CLIPBOARD=1 in a Wayland session")
+	}
+	const sample = "Polish clipboard regression check.\n剪贴板验证"
+	var helperErr error
+	c := Clipboard{Run: func(ctx context.Context, name string, args []string, input io.Reader) ([]byte, error) {
+		out, err := run(ctx, name, append([]string{"--primary"}, args...), input)
+		if name == "wl-copy" {
+			helperErr = err
+		}
+		return out, err
+	}}
+	err := c.Copy(context.Background(), sample)
+	got, readErr := c.Read(context.Background(), false)
+	if readErr == nil && got == sample {
+		t.Cleanup(func() {
+			// Do not clear a newer selection made by the user during this check.
+			if current, readErr := c.Read(context.Background(), false); readErr == nil && current == sample {
+				ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+				defer cancel()
+				_, _ = run(ctx, "wl-copy", []string{"--primary", "--clear"}, nil)
+			}
+		})
+	}
+	if err != nil {
+		t.Fatalf("wl-copy returned %v; clipboard payload matched: %t", helperErr, readErr == nil && got == sample)
+	}
+	if readErr != nil || got != sample {
+		t.Fatal("clipboard round trip failed")
 	}
 }
 

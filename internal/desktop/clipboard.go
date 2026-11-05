@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -25,6 +26,19 @@ func run(ctx context.Context, name string, args []string, input io.Reader) ([]by
 	cmd.Stdin = input
 	// A helper retaining its output pipe must not stall the UI indefinitely.
 	cmd.WaitDelay = 200 * time.Millisecond
+	if name == "wl-copy" {
+		// wl-copy forks a clipboard owner that inherits stderr. Output would
+		// create a capture pipe and report ErrWaitDelay after a successful copy.
+		// Copy needs only the parent's exit status, so use file descriptors
+		// rather than output-copying goroutines for both unused streams.
+		devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			return nil, err
+		}
+		defer devNull.Close()
+		cmd.Stdout, cmd.Stderr = devNull, devNull
+		return nil, cmd.Run()
+	}
 	return cmd.Output()
 }
 
