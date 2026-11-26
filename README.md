@@ -139,6 +139,8 @@ Repeated launches reuse the same window. An explicit subcommand switches to its 
 
 A new selection or a change to source text or processing options cancels the old request and clears its result. Late reads and model responses cannot replace a newer task or trigger stale processing. Model failures preserve the source for retrying. Closing the window exits the application.
 
+Press **Esc** in the polishing editor, translation editor, or model settings to close the window and exit the application. Active text reads and model requests are canceled. Unsaved text and settings drafts are discarded without confirmation. If a dropdown is open, the first Esc dismisses it; press Esc again to exit. The next shortcut launch starts a new instance.
+
 The first version does not include automatic replacement in other applications, a selection toolbar, OCR, a tray process, or text history.
 
 ## Hyprland / Omarchy shortcut example

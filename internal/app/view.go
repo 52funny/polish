@@ -10,6 +10,9 @@ import (
 )
 
 func (a *app) view(c *ui.Context) {
+	if c.Shortcut(0, ui.KeyEscape) {
+		a.close()
+	}
 	t := c.Theme()
 	ui.Column(c).Fill().Padding(24).Gap(16).Background(t.Background).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {

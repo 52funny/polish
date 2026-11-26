@@ -40,6 +40,7 @@ type app struct {
 	clipboard        clipboard
 	post             func(func())
 	reveal           func()
+	close            func()
 	systemLanguage   string
 	languageChanged  func(string)
 	modelLister      modelLister
@@ -61,7 +62,7 @@ func newApp(cfg config.Config, path string) *app {
 		status:   i18n.Text("Select text and use your shortcut, or enter text here."),
 		settings: cfg.Validate() != nil,
 		model:    client, modelLister: client, clipboard: desktop.New(),
-		reveal: func() {},
+		reveal: func() {}, close: func() {},
 	}
 }
 

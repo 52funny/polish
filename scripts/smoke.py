@@ -21,6 +21,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 class Model(BaseHTTPRequestHandler):
     requests = []
     models_available = True
+    get_gate = None
+    post_gate = None
+    get_started = threading.Event()
+    post_started = threading.Event()
 
     def log_message(self, *args):
         pass
@@ -28,6 +32,10 @@ class Model(BaseHTTPRequestHandler):
     def do_GET(self):
         assert self.path == "/v1/models"
         assert self.headers["Authorization"] == "Bearer smoke-key"
+        if gate := type(self).get_gate:
+            type(self).get_started.set()
+            gate.wait(timeout=15)
+            return  # This request is held until the application exits.
         data = json.dumps({"data": [{"id": "another-model"}, {"id": "smoke-model"}]}).encode()
         self.send_response(200 if self.models_available else 404)
         self.send_header("Content-Type", "application/json")
@@ -40,6 +48,10 @@ class Model(BaseHTTPRequestHandler):
         assert self.path == "/v1/chat/completions"
         assert self.headers["Authorization"] == "Bearer smoke-key"
         self.requests.append(body)
+        if gate := type(self).post_gate:
+            type(self).post_started.set()
+            gate.wait(timeout=15)
+            return  # This request is held until the application exits.
         output = "Polished text." if "Polish the source text" in body["messages"][0]["content"] else "Translated text."
         data = json.dumps({"choices": [{"message": {"content": output}, "finish_reason": "stop"}]}).encode()
         self.send_response(200)
@@ -103,7 +115,10 @@ def main():
             def call(method, **params):
                 stream.write((json.dumps({"id": 1, "method": method, "params": params}) + "\n").encode())
                 stream.flush()
-                response = json.loads(stream.readline())
+                line = stream.readline()
+                if not line:
+                    raise EOFError("Automation connection closed")
+                response = json.loads(line)
                 if method == "tree" and response.get("error", {}).get("code") == "no_window":
                     return {"nodes": []}  # App ready, first window not created yet.
                 assert "error" not in response, response
@@ -228,6 +243,24 @@ def main():
                 subprocess.run([binary, *args], env=secondary_env, cwd=root, check=True, timeout=5)
                 call("idle")
 
+            def exit_by_escape():
+                assert proc.poll() is None, "Application exited before Esc"
+                try:
+                    call("input", events=[{"type": "key", "key": "Escape"}])
+                except (EOFError, ConnectionResetError):
+                    pass  # A successful exit can close the socket before its reply.
+                assert proc.wait(timeout=5) == 0, "Esc did not exit normally"
+
+            def restart(*args):
+                nonlocal proc, conn, stream
+                assert proc.poll() == 0, "Previous instance did not exit normally"
+                stream.close()
+                conn.close()
+                proc = subprocess.Popen([binary, *args], env=env, cwd=root, stdout=subprocess.DEVNULL)
+                conn = socket.socket(socket.AF_UNIX)
+                conn.settimeout(5)
+                stream = connect()
+
             # Forwarded subcommands start one request and leave the result visible.
             (root / "selection").write_text("自动翻译\n选区")
             launch("translate", "--selection")
@@ -266,28 +299,62 @@ def main():
             assert len(Model.requests) == 4
 
             # Cold starts must apply their mode before capturing and processing.
+            exit_by_escape()
             for operation, expected in (("translate", "Translated text."), ("polish", "Polished text.")):
-                stream.close()
-                conn.close()
-                proc.terminate()
-                proc.wait(timeout=5)
                 (root / "selection").write_text(f"Cold start: {operation}")
                 count = len(Model.requests)
-                proc = subprocess.Popen([binary, operation, "--selection"], env=env, cwd=root, stdout=subprocess.DEVNULL)
-                conn = socket.socket(socket.AF_UNIX)
-                conn.settimeout(5)
-                stream = connect()
+                restart(operation, "--selection")
                 wait_for(value("result", expected))
                 assert value("source", f"Cold start: {operation}")(nodes())
                 assert len(Model.requests) == count + 1
                 assert ("Polish the source text" in Model.requests[-1]["messages"][0]["content"]) == (operation == "polish")
                 assert len(call("windows")["windows"]) == 1
-            # Capture only this application's content, without desktop pixels.
-            screenshot = call("capture")
-            output = Path(os.environ.get("POLISH_TEST_ARTIFACTS", "/tmp/polish-preview"))
-            output.mkdir(parents=True, exist_ok=True)
-            (output / "native-smoke.png").write_bytes(base64.b64decode(screenshot["png"]))
-            print("PASS: headless CLI help/errors, live language switching, localized errors, model discovery, model polish/translation (mock), copy helper, selection failure, automatic subcommands on cold start and single-instance reuse")
+                if operation == "polish":
+                    # Capture only this application's content, without desktop pixels.
+                    screenshot = call("capture")
+                    output = Path(os.environ.get("POLISH_TEST_ARTIFACTS", "/tmp/polish-preview"))
+                    output.mkdir(parents=True, exist_ok=True)
+                    (output / "native-smoke.png").write_bytes(base64.b64decode(screenshot["png"]))
+                    # An open dropdown consumes the first Esc instead of closing the app.
+                    press("style")
+                    wait_for(lambda tree: any(n.get("label") == "Formal" and n.get("role") == "text" for n in tree))
+                    call("input", events=[{"type": "key", "key": "Escape"}])
+                    wait_for(lambda tree: not any(n.get("label") == "Formal" and n.get("role") == "text" for n in tree))
+                    assert proc.poll() is None
+                call("act", key="source" if operation == "polish" else "result", action="focus")
+                call("idle")
+                call("input", events=[{"type": "key", "key": "Ctrl+Escape"}])
+                call("idle")
+                assert proc.poll() is None, "Modified Esc closed the application"
+                exit_by_escape()
+
+            # Closing during an active model request must not wait for a response.
+            restart("polish")
+            wait_for(lambda tree: any(n.get("key") == "source" for n in tree))
+            call("act", key="source", action="setValue", text="An unfinished request.")
+            Model.post_gate = threading.Event()
+            press("process")
+            assert Model.post_started.wait(timeout=5)
+            wait_for(lambda tree: any(n.get("key") == "cancel" for n in tree))
+            call("act", key="source", action="focus")
+            exit_by_escape()
+            Model.post_gate.set()
+            Model.post_gate = None
+
+            # Settings also close while a model list request is still pending.
+            restart("translate")
+            press("settings-toggle")
+            wait_for(lambda tree: any(n.get("key") == "model" for n in tree))
+            call("act", key="model", action="setValue", text="unsaved-model")
+            Model.get_gate = threading.Event()
+            press("fetch-models")
+            assert Model.get_started.wait(timeout=5)
+            call("act", key="api-key", action="focus")
+            exit_by_escape()
+            Model.get_gate.set()
+            Model.get_gate = None
+            assert json.loads(settings.read_text())["model"] == "smoke-model"
+            print("PASS: headless CLI help/errors, live language switching, localized errors, model discovery, model polish/translation (mock), copy helper, selection failure, automatic subcommands, Esc exit from editors and settings, dropdown dismissal, exit during requests, and restart after exit")
             print(f"Preview: {output / 'native-smoke.png'}")
         finally:
             if stream is not None:
@@ -296,6 +363,9 @@ def main():
             if proc.poll() is None:
                 proc.terminate()
                 proc.wait(timeout=5)
+            for gate in (Model.get_gate, Model.post_gate):
+                if gate is not None:
+                    gate.set()
             server.shutdown()
 
 

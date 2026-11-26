@@ -47,6 +47,7 @@ func Run(name string, options cli.Options) error {
 			Content: ui.View(a.view),
 		})
 		a.post = win.Update
+		a.close = func() { win.Update(win.Close) }
 		a.languageChanged = func(locale string) {
 			mygo.App.SetLocale(locale)
 			win.SetTitle(a.tr("Polish · Writing and translation"))
