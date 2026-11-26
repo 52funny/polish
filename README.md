@@ -95,7 +95,7 @@ For OpenCode Go, use `https://opencode.ai/inference/go/openai/v1`. Polish sends 
 
 Settings are stored at `$XDG_CONFIG_HOME/polish/config.json`, or `~/.config/polish/config.json` when `XDG_CONFIG_HOME` is unset. The directory uses mode `0700`; the file uses `0600`.
 
-**The API key is stored locally in plain text** and masked in the interface. Source text is sent only when you start processing. The application does not save text history or log source text, results, or keys.
+**The API key is stored locally in plain text** and masked in the interface. Source text is sent when you click the processing button or launch a subcommand with `--selection`. The application does not save text history or log source text, results, or keys.
 
 ## Interface language
 
@@ -108,17 +108,24 @@ Changing the interface language preserves source text, results, model selection,
 ## Usage
 
 ```sh
-polish                  # Open the editor
-polish --selection      # Capture the Wayland PRIMARY selection, then open or focus
+polish                        # Open or focus the editor
+polish polish                 # Open or switch to polishing
+polish translate              # Open or switch to translation
+polish polish --selection     # Capture selected text and automatically polish it
+polish translate --selection  # Capture selected text and automatically translate it
+polish --selection            # Capture selected text for manual review and processing
+polish --help                 # Show commands and options
 ```
 
-1. Select text in another application and invoke your shortcut, or enter text manually.
-2. Review the source, choose a polishing style or translation target, and start processing.
-3. Review the result, click **Copy result**, and paste it into the original application.
+With a subcommand and `--selection`, select text in another application and run the command or invoke its shortcut. Polish captures the text before focusing the window, starts the model request immediately, and shows the progress and result in the GUI. You do not need to click the processing button. Results are copied only when you click **Copy result**.
 
-`--selection` reads the Wayland **PRIMARY selection**, which differs from the regular Ctrl+C clipboard. The source application must publish a PRIMARY selection. Some browsers, editors, or terminals disable it, and PRIMARY may retain an earlier selection. Review the source before sending it.
+Without `--selection`, subcommands only open the corresponding editor. You can enter text, choose a style or translation target, and click the processing button. The original `polish --selection` command still imports text without processing automatically. The flag can appear before or after the subcommand; for example, `polish --selection translate`. Use `--selection=false` to disable capture.
 
-Selection capture times out after two seconds. A failed capture clears the previous source and result and offers explicit clipboard import or manual entry. It never silently substitutes regular clipboard contents for the current selection.
+Automatic processing uses the current polishing style or translation target in an existing window. A new window defaults to natural polishing and translation into Simplified Chinese. If valid model settings are missing, captured text is kept while you configure the model; saving settings does not send a delayed request. Click the processing button when ready.
+
+`--selection` reads the Wayland **PRIMARY selection**, which differs from the regular Ctrl+C clipboard and requires no Ctrl+C first. The source application must publish a PRIMARY selection. Some browsers, editors, or terminals disable it, and PRIMARY may retain an earlier selection. Use the original `polish --selection` command when you want to review the captured source before sending it.
+
+Selection capture times out after two seconds. A failed or empty capture clears the previous source and result, displays an error, and does not call the model. You can explicitly import the clipboard or enter text manually. The app never silently substitutes regular clipboard contents for the current selection.
 
 ### Replace line breaks
 
@@ -128,7 +135,9 @@ LF, CRLF, CR, and Unicode line breaks are handled; other spaces and tabs are pre
 
 ### Window and request behavior
 
-Repeated launches reuse the same window. A new selection or a change to source text or processing options cancels the old request and clears its result. Late responses cannot replace a newer result. Closing the window exits the application.
+Repeated launches reuse the same window. An explicit subcommand switches to its mode; a launch without a subcommand keeps the existing mode. Switching modes preserves source text and clears the old result, while selecting the same mode without capture preserves both. A subcommand opens the editor using saved model settings, leaving any unsaved settings draft uncommitted.
+
+A new selection or a change to source text or processing options cancels the old request and clears its result. Late reads and model responses cannot replace a newer task or trigger stale processing. Model failures preserve the source for retrying. Closing the window exits the application.
 
 The first version does not include automatic replacement in other applications, a selection toolbar, OCR, a tray process, or text history.
 
@@ -177,7 +186,7 @@ Polish does not modify desktop configuration automatically.
 
 Tests cover settings permissions, selection failures and timeouts, model requests and discovery, cancellation, stale-response isolation, line-break preferences, catalog coverage and formatting, language fallback and persistence, and both interface languages in light and dark themes at the minimum window size.
 
-The native smoke test needs a running Wayland session. It uses temporary settings, a local mock model service, and mocked clipboard helpers. It verifies language switching and localized errors, model selection and persistence, source normalization, processing, copying, and single-instance behavior. It does not use real model credentials or overwrite the system clipboard. The test app is isolated from normal Polish instances and runs outside the source directory to verify embedded resources.
+The native smoke test needs a running Wayland session. It uses temporary settings, a local mock model service, and mocked clipboard helpers. It verifies language switching and localized errors, model selection and persistence, source normalization, processing, copying, and automatic subcommands on both cold starts and single-instance reuse. It also checks CLI help and errors without a Wayland display. It does not use real model credentials or overwrite the system clipboard. The test app is isolated from normal Polish instances and runs outside the source directory to verify embedded resources.
 
 Screenshots are saved under `/tmp/polish-preview`, or the directory specified by `POLISH_TEST_ARTIFACTS`. Normal builds exclude the automation plugin; builds with the `e2e` tag listen on MyGo's local automation socket only when `MYGO_AUTOMATION` is set.
 
@@ -197,6 +206,7 @@ polish/
 ├── docs/screenshots/        # Native application screenshots used in this README
 ├── internal/
 │   ├── app/                 # Lifecycle, task state, and native views
+│   ├── cli/                 # Shared command and launch option parsing
 │   ├── config/              # Settings validation and persistence
 │   ├── desktop/             # Wayland selection and clipboard adapters
 │   ├── i18n/

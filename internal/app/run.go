@@ -2,8 +2,8 @@ package app
 
 import (
 	"fmt"
-	"slices"
 
+	"github.com/52funny/polish/internal/cli"
 	"github.com/52funny/polish/internal/config"
 	"github.com/52funny/polish/internal/i18n"
 	"github.com/egoist/mygo"
@@ -12,7 +12,7 @@ import (
 )
 
 // Run starts the native application on the main goroutine.
-func Run(name string, selection bool) error {
+func Run(name string, options cli.Options) error {
 	mygo.App.SetName(name)
 	if !mygo.App.RequestSingleInstanceLock() {
 		return nil
@@ -29,14 +29,12 @@ func Run(name string, selection bool) error {
 	}
 	var win *mygo.Window
 	mygo.App.OnSecondInstance(func(args []string, _ string) {
+		next, err := cli.Parse(args)
+		if err != nil {
+			return // The entry point validates arguments before forwarding them.
+		}
 		mygo.App.WhenReady(func() {
-			if slices.ContainsFunc(args, func(arg string) bool {
-				return arg == "--selection" || arg == "-selection" || arg == "--selection=true" || arg == "-selection=true"
-			}) {
-				a.read(true)
-			} else {
-				a.reveal()
-			}
+			a.launch(next)
 		})
 	})
 	mygo.App.WhenReady(func() {
@@ -56,11 +54,7 @@ func Run(name string, selection bool) error {
 		}
 		a.reveal = func() { win.Show(); win.Restore(); win.Focus(); win.Invalidate() }
 		win.OnClosed(func() { a.stop(); a.stopModelList() })
-		if selection {
-			a.read(true)
-		} else {
-			a.reveal()
-		}
+		a.launch(options)
 	})
 	return mygo.App.Run()
 }

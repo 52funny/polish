@@ -102,6 +102,10 @@ func (a *app) changed() {
 }
 
 func (a *app) read(primary bool) {
+	a.readText(primary, false)
+}
+
+func (a *app) readText(primary, autoProcess bool) {
 	a.source, a.result = "", ""
 	a.message(i18n.Text("Reading text…"), false)
 	a.run("read", func(ctx context.Context) (string, error) {
@@ -111,7 +115,11 @@ func (a *app) read(primary bool) {
 			a.message(i18n.FromError(err), true)
 		} else {
 			a.source = a.prepareSource(text)
-			a.message(i18n.Text("Text loaded. Choose polishing or translation to continue."), false)
+			if autoProcess {
+				a.process()
+			} else {
+				a.message(i18n.Text("Text loaded. Choose polishing or translation to continue."), false)
+			}
 		}
 		a.reveal()
 	})

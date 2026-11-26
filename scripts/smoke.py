@@ -51,6 +51,13 @@ class Model(BaseHTTPRequestHandler):
 
 def main():
     binary = str(Path("bin/polish-e2e").resolve())
+    headless_env = {k: v for k, v in os.environ.items() if k != "WAYLAND_DISPLAY"}
+    for args in (["--help"], ["-h"], ["polish", "--help"], ["translate", "-h"]):
+        result = subprocess.run([binary, *args], env=headless_env, capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0 and "Usage: polish" in result.stdout, result
+    for args in (["unknown"], ["polish", "translate"], ["translate", "--unknown"], ["--selection=invalid"]):
+        result = subprocess.run([binary, *args], env=headless_env, capture_output=True, text=True, timeout=5)
+        assert result.returncode == 2 and "Usage: polish" in result.stderr, result
     with tempfile.TemporaryDirectory(prefix="polish-smoke-") as tmp:
         root = Path(tmp)
         mockbin = root / "mockbin"
@@ -72,10 +79,12 @@ def main():
                    XDG_DATA_HOME=str(root / "data"), LANGUAGE="en", LC_ALL="C.UTF-8")
         secondary_env = {k: v for k, v in env.items() if k != "MYGO_AUTOMATION"}
         # Launch outside the source tree to exercise embedded resources.
-        proc = subprocess.Popen([binary, "--selection"], env=env, cwd=root, stdout=subprocess.DEVNULL)
+        proc = subprocess.Popen([binary, "translate", "--selection"], env=env, cwd=root, stdout=subprocess.DEVNULL)
         conn = socket.socket(socket.AF_UNIX)
         conn.settimeout(5)
-        try:
+        stream = None
+
+        def connect():
             for _ in range(100):
                 if proc.poll() is not None:
                     raise RuntimeError(f"App exited before ready: {proc.returncode}")
@@ -86,7 +95,10 @@ def main():
                     time.sleep(0.05)
             else:
                 raise RuntimeError("Automation socket did not start")
-            stream = conn.makefile("rwb")
+            return conn.makefile("rwb")
+
+        try:
+            stream = connect()
 
             def call(method, **params):
                 stream.write((json.dumps({"id": 1, "method": method, "params": params}) + "\n").encode())
@@ -117,8 +129,13 @@ def main():
                 call("act", key=key, action="press")
 
             wait_for(lambda tree: any(n.get("key") == "base-url" for n in tree))
+            # The hidden window's tree exists before capture completes and it is shown.
+            wait_for(lambda tree: any("Enter a valid HTTP(S)" in n.get("label", "") for n in tree))
+            call("idle")
+
             def choose_option(key, label):
                 press(key)
+                call("idle")
                 tree = wait_for(lambda tree: any(n.get("label") == label and n.get("role") == "text" for n in tree))
                 choice = next(n for n in tree if n.get("label") == label and n.get("role") == "text")
                 b = choice["bounds"]
@@ -154,6 +171,13 @@ def main():
             (output / "model-picker-native.png").write_bytes(base64.b64decode(screenshot["png"]))
             press("save-settings")
             wait_for(value("source", "原始文本。\n第二段。"))
+            # A launch without valid model settings never runs later on save.
+            wait_for(lambda tree: any(n.get("key") == "target" for n in tree))
+            call("idle")
+            assert len(Model.requests) == 0
+            tab = next(n for n in nodes() if n.get("label") == "Polish text" and "press" in n.get("actions", []))
+            call("act", id=tab["id"], action="press")
+            wait_for(lambda tree: any(n.get("key") == "style" for n in tree))
             settings = root / "config/polish/config.json"
             assert settings.stat().st_mode & 0o777 == 0o600
             assert json.loads(settings.read_text())["model"] == "smoke-model"
@@ -198,17 +222,76 @@ def main():
             wait_for(value("source", "新的选区"))
             assert len(call("windows")["windows"]) == 1
             assert value("result", "")(nodes())
+            assert len(Model.requests) == 2  # Legacy --selection still needs a click.
+
+            def launch(*args):
+                subprocess.run([binary, *args], env=secondary_env, cwd=root, check=True, timeout=5)
+                call("idle")
+
+            # Forwarded subcommands start one request and leave the result visible.
+            (root / "selection").write_text("自动翻译\n选区")
+            launch("translate", "--selection")
+            wait_for(value("result", "Translated text."))
+            assert len(Model.requests) == 3
+            assert Model.requests[-1]["messages"][1]["content"] == "自动翻译\n选区"
+            assert "into English" in Model.requests[-1]["messages"][0]["content"]
+            launch("translate")
+            assert value("result", "Translated text.")(nodes())
+            launch()
+            assert value("result", "Translated text.")(nodes())
+            assert any(n.get("key") == "target" for n in nodes())
+            assert len(Model.requests) == 3
+
+            launch("polish")
+            wait_for(lambda tree: any(n.get("key") == "style" for n in tree))
+            assert value("source", "自动翻译\n选区")(nodes()) and value("result", "")(nodes())
+            assert len(Model.requests) == 3
+            # Valid saved settings are used even while an unsaved settings draft is open.
+            press("settings-toggle")
+            wait_for(lambda tree: any(n.get("key") == "api-key" for n in tree))
+            call("act", key="api-key", action="setValue", text="unsaved-key")
+            call("idle")
+            (root / "selection").write_text("自动润色选区")
+            launch("--selection", "polish")
+            wait_for(value("result", "Polished text."))
+            assert len(Model.requests) == 4
+            assert "Polish the source text" in Model.requests[-1]["messages"][0]["content"]
+            assert Model.requests[-1]["messages"][1]["content"] == "自动润色选区"
+            assert json.loads(settings.read_text())["api_key"] == "smoke-key"
+            assert len(call("windows")["windows"]) == 1
+
             (root / "selection").unlink()
-            subprocess.run([binary, "--selection"], env=secondary_env, cwd=root, check=True, timeout=5)
+            launch("translate", "--selection")
             wait_for(lambda tree: value("source", "")(tree) and any("Could not read the selection" in n.get("label", "") for n in tree))
+            assert len(Model.requests) == 4
+
+            # Cold starts must apply their mode before capturing and processing.
+            for operation, expected in (("translate", "Translated text."), ("polish", "Polished text.")):
+                stream.close()
+                conn.close()
+                proc.terminate()
+                proc.wait(timeout=5)
+                (root / "selection").write_text(f"Cold start: {operation}")
+                count = len(Model.requests)
+                proc = subprocess.Popen([binary, operation, "--selection"], env=env, cwd=root, stdout=subprocess.DEVNULL)
+                conn = socket.socket(socket.AF_UNIX)
+                conn.settimeout(5)
+                stream = connect()
+                wait_for(value("result", expected))
+                assert value("source", f"Cold start: {operation}")(nodes())
+                assert len(Model.requests) == count + 1
+                assert ("Polish the source text" in Model.requests[-1]["messages"][0]["content"]) == (operation == "polish")
+                assert len(call("windows")["windows"]) == 1
             # Capture only this application's content, without desktop pixels.
             screenshot = call("capture")
             output = Path(os.environ.get("POLISH_TEST_ARTIFACTS", "/tmp/polish-preview"))
             output.mkdir(parents=True, exist_ok=True)
             (output / "native-smoke.png").write_bytes(base64.b64decode(screenshot["png"]))
-            print("PASS: live language switching, localized errors, model discovery, dropdown selection and persistence, manual fallback, model polish/translation (mock), copy helper, selection failure, single-instance reuse")
+            print("PASS: headless CLI help/errors, live language switching, localized errors, model discovery, model polish/translation (mock), copy helper, selection failure, automatic subcommands on cold start and single-instance reuse")
             print(f"Preview: {output / 'native-smoke.png'}")
         finally:
+            if stream is not None:
+                stream.close()
             conn.close()
             if proc.poll() is None:
                 proc.terminate()

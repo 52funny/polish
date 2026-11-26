@@ -22,10 +22,10 @@ help:
 		'make clean       Remove bin/polish and bin/polish-e2e'
 
 build:
-	$(GO) build -o bin/polish ./cmd/polish
+	$(GO) build -ldflags "-s -w" -o bin/polish ./cmd/polish
 
 install:
-	$(GO) install ./cmd/polish
+	$(GO) install -ldflags "-s -w" ./cmd/polish
 
 run: build
 	./bin/polish $(ARGS)
